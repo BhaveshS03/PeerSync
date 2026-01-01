@@ -1,6 +1,6 @@
-import socket
+import asyncio
 import threading
-import time
+import socket
 import psutil
 from zeroconf import Zeroconf, ServiceInfo
 
@@ -11,13 +11,13 @@ class ZeroconfBroadcaster:
         self.service_type = service_type
         self.port = port
 
+        self.thread = None
+        self.loop = None
         self.zc = None
         self.service_info = None
-        self.thread = None
-        self.stop_event = threading.Event()
         self.running = False
 
-    def _get_local_ip(self):
+    def _get_ip(self):
         for iface, addrs in psutil.net_if_addrs().items():
             for a in addrs:
                 if a.family == socket.AF_INET and a.address.startswith("192.168."):
@@ -25,10 +25,12 @@ class ZeroconfBroadcaster:
         return None
 
     def _run(self):
-        ip = self._get_local_ip()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        self.loop = asyncio.get_event_loop()
+
+        ip = self._get_ip()
         if not ip:
             print("No LAN IP found")
-            self.running = False
             return
 
         self.zc = Zeroconf()
@@ -43,17 +45,17 @@ class ZeroconfBroadcaster:
         self.zc.register_service(self.service_info)
         print("📡 Broadcasting started")
 
-        while not self.stop_event.is_set():
-            time.sleep(1)
+        self.loop.run_forever()
 
+        # cleanup
         self.zc.unregister_service(self.service_info)
         self.zc.close()
+        self.loop.close()
         print("🛑 Broadcasting stopped")
 
     def start(self):
         if self.running:
             return
-        self.stop_event.clear()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         self.running = True
@@ -61,8 +63,6 @@ class ZeroconfBroadcaster:
     def stop(self):
         if not self.running:
             return
-        self.stop_event.set()
+        self.loop.call_soon_threadsafe(self.loop.stop)
         self.running = False
 
-    def toggle(self):
-        self.start() if not self.running else self.stop()

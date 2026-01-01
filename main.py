@@ -17,12 +17,14 @@ def update_service(name, info):
 
 discovery = ZeroconfDiscovery(on_update=update_service)
 
-
 def toggle_broadcast():
-    broadcaster.toggle()
-    broadcast_btn.configure(
-        text="Stop Broadcast" if broadcaster.running else "Start Broadcast"
-    )
+    if broadcaster.running:
+        broadcaster.stop()
+        broadcast_btn.configure(text="Start Broadcast")
+    else:
+        broadcaster.start()
+        broadcast_btn.configure(text="Stop Broadcast")
+
 
 
 def toggle_discovery():
