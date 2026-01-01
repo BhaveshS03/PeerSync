@@ -1,45 +1,87 @@
 import customtkinter
-from ZeroconfManager import ZeroconfBroadcaster, ZeroconfDiscovery
+from ZeroconfManager import (
+    ZeroconfManager,
+    ZeroconfBroadcaster,
+    ZeroconfDiscovery,
+)
+
 customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
 
 app = customtkinter.CTk()
 app.geometry("600x480")
+app.title("Zeroconf Manager Demo")
 
-broadcaster = ZeroconfBroadcaster("MyService")
-services_box = customtkinter.CTkTextbox(app, width=500, height=200)
+services_box = customtkinter.CTkTextbox(app, width=520, height=260)
 services_box.pack(pady=20)
 
+# ----------------------------
+# UI-safe helpers
+# ----------------------------
+def ui_log(text):
+    app.after(0, lambda: services_box.insert("end", text + "\n"))
 
-def update_service(name, info):
-    app.after(0, lambda: services_box.insert("end", f"{name}\n"))
+def ui_clear():
+    app.after(0, lambda: services_box.delete("1.0", "end"))
 
+# ----------------------------
+# Zeroconf callbacks
+# ----------------------------
+def on_add(peer):
+    ui_log(f"➕ {peer.name} @ {peer.address}:{peer.port}")
 
-discovery = ZeroconfDiscovery(on_update=update_service)
+def on_update(peer):
+    ui_log(f"🔄 {peer.name}")
 
-def toggle_broadcast():
-    if broadcaster.running:
-        broadcaster.stop()
-        broadcast_btn.configure(text="Start Broadcast")
+def on_remove(peer):
+    ui_log(f"➖ {peer.name}")
+
+# ----------------------------
+# Zeroconf setup
+# ----------------------------
+broadcaster = ZeroconfBroadcaster(base_name="MyService")
+discovery = ZeroconfDiscovery(own_id=broadcaster.instance_id)
+
+manager = ZeroconfManager(
+    broadcaster=broadcaster,
+    discovery=discovery,
+    on_add=on_add,
+    on_update=on_update,
+    on_remove=on_remove,
+)
+
+# ----------------------------
+# Button actions
+# ----------------------------
+def toggle_manager():
+    if manager._running:
+        manager.stop()
+        ui_log("🛑 Manager stopped")
+        toggle_btn.configure(text="Start Zeroconf")
     else:
-        broadcaster.start()
-        broadcast_btn.configure(text="Stop Broadcast")
+        ui_clear()
+        manager.start()
+        ui_log("▶ Zeroconf started")
+        toggle_btn.configure(text="Stop Zeroconf")
 
 
+# ----------------------------
+# UI controls
+# ----------------------------
+toggle_btn = customtkinter.CTkButton(
+    app,
+    text="Start Zeroconf",
+    command=toggle_manager,
+)
+toggle_btn.pack(pady=10)
 
-def toggle_discovery():
-    if discovery.browser:
-        discovery.stop()
-        discover_btn.configure(text="Start Discovery")
-    else:
-        discovery.start()
-        discover_btn.configure(text="Stop Discovery")
 
+# ----------------------------
+# Clean shutdown
+# ----------------------------
+def on_close():
+    manager.stop()
+    app.destroy()
 
-broadcast_btn = customtkinter.CTkButton(app, text="Start Broadcast", command=toggle_broadcast)
-broadcast_btn.pack(pady=10)
-
-discover_btn = customtkinter.CTkButton(app, text="Start Discovery", command=toggle_discovery)
-discover_btn.pack(pady=10)
-
+app.protocol("WM_DELETE_WINDOW", on_close)
 app.mainloop()

@@ -4,18 +4,17 @@ from zeroconf import Zeroconf, ServiceBrowser
 
 
 class ZeroconfDiscovery:
-    def __init__(self, service_type="_http._tcp.local.", on_update=None):
+    def __init__(self, service_type="_http._tcp.local.", own_id=None, on_update=None):
         self.service_type = service_type
-        self.on_update = on_update  # callback(name, info)
+        self.own_id = own_id          # 🔑 UUID of THIS device
+        self.on_update = on_update
 
         self.thread = None
         self.loop = None
         self.zc = None
         self.browser = None
-
         self.running = False
 
-    # ---- Zeroconf callback (NEW API compatible) ----
     def _on_service(self, **kwargs):
         zc = kwargs.get("zeroconf")
         service_type = kwargs.get("service_type")
@@ -25,10 +24,19 @@ class ZeroconfDiscovery:
             return
 
         info = zc.get_service_info(service_type, name)
+        if not info:
+            return
+
+        props = info.properties or {}
+        remote_id = props.get(b"id", b"").decode()
+
+        # 🚫 hide our own service
+        if remote_id == self.own_id:
+            return
+
         if self.on_update:
             self.on_update(name, info)
 
-    # ---- Async loop thread ----
     def _run(self):
         asyncio.set_event_loop(asyncio.new_event_loop())
         self.loop = asyncio.get_event_loop()
@@ -45,39 +53,24 @@ class ZeroconfDiscovery:
         try:
             self.loop.run_forever()
         finally:
-            if self.browser:
-                self.browser.cancel()
-            if self.zc:
-                self.zc.close()
-
-            self.browser = None
-            self.zc = None
+            self.browser.cancel()
+            self.zc.close()
             self.loop.close()
             self.loop = None
-
+            self.running = False
             print("🛑 Discovery stopped")
 
-    # ---- Public API ----
     def start(self):
         if self.running:
             return
-
         self.running = True
-        self.thread = threading.Thread(
-            target=self._run,
-            daemon=True
-        )
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def stop(self):
         if not self.running or not self.loop:
             return
-
         self.loop.call_soon_threadsafe(self.loop.stop)
-        self.running = False
 
     def toggle(self):
-        if self.running:
-            self.stop()
-        else:
-            self.start()
+        self.stop() if self.running else self.start()

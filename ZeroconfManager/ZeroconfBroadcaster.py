@@ -2,14 +2,18 @@ import asyncio
 import threading
 import socket
 import psutil
+import uuid
 from zeroconf import Zeroconf, ServiceInfo
 
 
 class ZeroconfBroadcaster:
-    def __init__(self, name, service_type="_http._tcp.local.", port=9999):
-        self.name = name
+    def __init__(self, base_name="ZenSync", service_type="_http._tcp.local.", port=9999):
+        self.base_name = base_name
         self.service_type = service_type
         self.port = port
+
+        self.instance_id = uuid.uuid4().hex[:8]
+        self.full_name = f"{self.base_name}-{self.instance_id}"
 
         self.thread = None
         self.loop = None
@@ -37,17 +41,17 @@ class ZeroconfBroadcaster:
         self.zc = Zeroconf()
         self.service_info = ServiceInfo(
             self.service_type,
-            f"{self.name}.{self.service_type}",
+            f"{self.full_name}.{self.service_type}",
             addresses=[socket.inet_aton(ip)],
             port=self.port,
-            properties={"msg": "hello"},
+            properties={
+                "id": self.instance_id,   # 🔑 used for filtering
+                "app": "zensync",
+            },
         )
 
-        self.zc.register_service(
-            self.service_info
-        )
-
-        print("📡 Broadcasting started")
+        self.zc.register_service(self.service_info)
+        print(f"📡 Broadcasting as {self.full_name}")
 
         try:
             self.loop.run_forever()
@@ -58,15 +62,9 @@ class ZeroconfBroadcaster:
 
             self.loop.close()
             self.loop = None
-            self.zc = None
-            self.service_info = None
-
-            with self._lock:
-                self.running = False
+            self.running = False
 
             print("🛑 Broadcasting stopped")
-
-    # ---------- Public API ----------
 
     def start(self):
         with self._lock:
@@ -74,10 +72,7 @@ class ZeroconfBroadcaster:
                 return
             self.running = True
 
-        self.thread = threading.Thread(
-            target=self._run,
-            daemon=True
-        )
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def stop(self):
@@ -89,7 +84,4 @@ class ZeroconfBroadcaster:
         loop.call_soon_threadsafe(loop.stop)
 
     def toggle(self):
-        if self.running:
-            self.stop()
-        else:
-            self.start()
+        self.stop() if self.running else self.start()
