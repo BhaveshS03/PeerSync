@@ -1,45 +1,95 @@
-import asyncio
 import threading
-from zeroconf import Zeroconf, ServiceBrowser
+import time
+import socket
+from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
 
 
 class ZeroconfDiscovery:
-    def __init__(self, service_type="_http._tcp.local.", own_id=None, on_update=None):
+    def __init__(
+        self,
+        service_type="_http._tcp.local.",
+        own_id=None,
+        on_add=None,
+        on_remove=None,
+        ttl=6,
+        cleanup_interval=2,
+    ):
         self.service_type = service_type
-        self.own_id = own_id          # 🔑 UUID of THIS device
-        self.on_update = on_update
+        self.own_id = own_id
+        self.on_add = on_add
+        self.on_remove = on_remove
 
-        self.thread = None
-        self.loop = None
+        self.ttl = ttl
+        self.cleanup_interval = cleanup_interval
+
         self.zc = None
         self.browser = None
         self.running = False
+        self._lock = threading.Lock()
 
-    def _on_service(self, **kwargs):
-        zc = kwargs.get("zeroconf")
-        service_type = kwargs.get("service_type")
-        name = kwargs.get("name")
+        # name -> {info, last_seen}
+        self.peers = {}
 
-        if not zc:
+        self._cleanup_thread = None
+
+    def _on_service(
+        self,
+        zeroconf,
+        service_type,
+        name,
+        state_change,
+    ):
+        if state_change not in (ServiceStateChange.Added, ServiceStateChange.Updated):
             return
 
-        info = zc.get_service_info(service_type, name)
-        if not info:
+        info = zeroconf.get_service_info(service_type, name)
+        if not info or not info.properties:
             return
 
-        props = info.properties or {}
-        remote_id = props.get(b"id", b"").decode()
+        props = {k.decode(): v.decode() for k, v in info.properties.items()}
+        peer_id = props.get("id")
 
-        # 🚫 hide our own service
-        if remote_id == self.own_id:
+        if peer_id == self.own_id:
             return
 
-        if self.on_update:
-            self.on_update(name, info)
+        addr = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
 
-    def _run(self):
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        self.loop = asyncio.get_event_loop()
+        with self._lock:
+            first_seen = name not in self.peers
+            self.peers[name] = {
+                "id": peer_id,
+                "address": addr,
+                "port": info.port,
+                "last_seen": time.time(),
+            }
+
+        if first_seen and self.on_add:
+            self.on_add(name, self.peers[name])
+
+    def _cleanup_loop(self):
+        while True:
+            with self._lock:
+                if not self.running:
+                    break
+
+                now = time.time()
+                expired = [
+                    name for name, peer in self.peers.items()
+                    if now - peer["last_seen"] > self.ttl
+                ]
+
+                for name in expired:
+                    peer = self.peers.pop(name)
+                    if self.on_remove:
+                        self.on_remove(name, peer)
+
+            time.sleep(self.cleanup_interval)
+
+    def start(self):
+        with self._lock:
+            if self.running:
+                return
+            self.running = True
 
         self.zc = Zeroconf()
         self.browser = ServiceBrowser(
@@ -48,29 +98,28 @@ class ZeroconfDiscovery:
             handlers=[self._on_service],
         )
 
-        print("🔍 Discovery started")
-
-        try:
-            self.loop.run_forever()
-        finally:
-            self.browser.cancel()
-            self.zc.close()
-            self.loop.close()
-            self.loop = None
-            self.running = False
-            print("🛑 Discovery stopped")
-
-    def start(self):
-        if self.running:
-            return
-        self.running = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            daemon=True,
+        )
+        self._cleanup_thread.start()
 
     def stop(self):
-        if not self.running or not self.loop:
-            return
-        self.loop.call_soon_threadsafe(self.loop.stop)
+        with self._lock:
+            if not self.running:
+                return
+            self.running = False
+
+        if self.browser:
+            self.browser.cancel()
+            self.browser = None
+
+        if self.zc:
+            self.zc.close()
+            self.zc = None
+
+        with self._lock:
+            self.peers.clear()
 
     def toggle(self):
         self.stop() if self.running else self.start()

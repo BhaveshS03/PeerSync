@@ -1,6 +1,6 @@
-import asyncio
 import threading
 import socket
+import time
 import psutil
 import uuid
 from zeroconf import Zeroconf, ServiceInfo
@@ -16,7 +16,6 @@ class ZeroconfBroadcaster:
         self.full_name = f"{self.base_name}-{self.instance_id}"
 
         self.thread = None
-        self.loop = None
         self.zc = None
         self.service_info = None
 
@@ -31,11 +30,9 @@ class ZeroconfBroadcaster:
         return None
 
     def _run(self):
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        self.loop = asyncio.get_event_loop()
-
         ip = self._get_ip()
         if not ip:
+            print("❌ No valid IP found")
             return
 
         self.zc = Zeroconf()
@@ -45,7 +42,7 @@ class ZeroconfBroadcaster:
             addresses=[socket.inet_aton(ip)],
             port=self.port,
             properties={
-                "id": self.instance_id,   # 🔑 used for filtering
+                "id": self.instance_id,
                 "app": "zensync",
             },
         )
@@ -53,18 +50,23 @@ class ZeroconfBroadcaster:
         self.zc.register_service(self.service_info)
         print(f"📡 Broadcasting as {self.full_name}")
 
+        # 🔁 Keep thread alive while broadcasting
+        while True:
+            with self._lock:
+                if not self.running:
+                    break
+            time.sleep(1)
+
         try:
-            self.loop.run_forever()
-        finally:
-            if self.zc and self.service_info:
-                self.zc.unregister_service(self.service_info)
-                self.zc.close()
+            self.zc.unregister_service(self.service_info)
+        except Exception:
+            pass
 
-            self.loop.close()
-            self.loop = None
-            self.running = False
+        self.zc.close()
+        self.zc = None
+        self.service_info = None
 
-            print("🛑 Broadcasting stopped")
+        print("🛑 Broadcasting stopped")
 
     def start(self):
         with self._lock:
@@ -77,11 +79,9 @@ class ZeroconfBroadcaster:
 
     def stop(self):
         with self._lock:
-            loop = self.loop
-            if not self.running or not loop or loop.is_closed():
+            if not self.running:
                 return
-
-        loop.call_soon_threadsafe(loop.stop)
+            self.running = False
 
     def toggle(self):
         self.stop() if self.running else self.start()

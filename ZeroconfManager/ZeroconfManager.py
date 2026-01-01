@@ -1,5 +1,8 @@
+import threading
 import time
 from dataclasses import dataclass
+from typing import Callable, Dict
+
 
 @dataclass
 class Peer:
@@ -9,13 +12,6 @@ class Peer:
     port: int
     last_seen: float
 
-
-import threading
-import time
-from typing import Callable, Dict
-
-PEER_TTL = 5.0          # seconds before peer considered gone
-CLEANUP_INTERVAL = 1.0 # seconds
 
 class ZeroconfManager:
     def __init__(
@@ -35,98 +31,80 @@ class ZeroconfManager:
 
         self.peers: Dict[str, Peer] = {}
         self._lock = threading.Lock()
-
-        self._cleanup_thread = None
         self._running = False
 
-        # wire discovery callback
-        self.discovery.on_update = self._on_service_update
+        # 🔌 Wire discovery callbacks
+        self.discovery.on_add = self._on_peer_add
+        self.discovery.on_remove = self._on_peer_remove
 
-    # ---------------------------
-    # Discovery callback
-    # ---------------------------
-    def _on_service_update(self, name, info):
-        props = info.properties or {}
-        peer_id = props.get(b"id", b"").decode()
-        if not peer_id:
-            return
-
-        address = ".".join(map(str, info.addresses[0]))
-        port = info.port
+    # ─────────────────────────────
+    # Discovery → Manager callbacks
+    # ─────────────────────────────
+    def _on_peer_add(self, name, info):
         now = time.time()
+        peer_id = info["id"]
 
         with self._lock:
             if peer_id in self.peers:
                 peer = self.peers[peer_id]
+                peer.address = info["address"]
+                peer.port = info["port"]
                 peer.last_seen = now
-                peer.address = address
-                peer.port = port
 
                 if self.on_update:
                     self.on_update(peer)
-            else:
-                peer = Peer(
-                    id=peer_id,
-                    name=name,
-                    address=address,
-                    port=port,
-                    last_seen=now,
-                )
-                self.peers[peer_id] = peer
+                return
 
-                if self.on_add:
-                    self.on_add(peer)
+            peer = Peer(
+                id=peer_id,
+                name=name,
+                address=info["address"],
+                port=info["port"],
+                last_seen=now,
+            )
 
-    # ---------------------------
-    # Cleanup loop
-    # ---------------------------
-    def _cleanup_loop(self):
-        while self._running:
-            time.sleep(CLEANUP_INTERVAL)
-            now = time.time()
+            self.peers[peer_id] = peer
 
-            with self._lock:
-                expired = [
-                    pid for pid, peer in self.peers.items()
-                    if now - peer.last_seen > PEER_TTL
-                ]
+        if self.on_add:
+            self.on_add(peer)
 
-                for pid in expired:
-                    peer = self.peers.pop(pid)
-                    if self.on_remove:
-                        self.on_remove(peer)
+    def _on_peer_remove(self, name, info):
+        peer_id = info["id"]
 
-    # ---------------------------
+        with self._lock:
+            peer = self.peers.pop(peer_id, None)
+
+        if peer and self.on_remove:
+            self.on_remove(peer)
+
+    # ─────────────────────────────
     # Lifecycle
-    # ---------------------------
+    # ─────────────────────────────
     def start(self):
-        if self._running:
-            return
-
-        self._running = True
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
 
         self.broadcaster.start()
         self.discovery.start()
 
-        self._cleanup_thread = threading.Thread(
-            target=self._cleanup_loop,
-            daemon=True
-        )
-        self._cleanup_thread.start()
-
     def stop(self):
-        if not self._running:
-            return
+        with self._lock:
+            if not self._running:
+                return
+            self._running = False
 
-        self._running = False
         self.discovery.stop()
         self.broadcaster.stop()
 
         with self._lock:
-            for peer in self.peers.values():
-                if self.on_remove:
-                    self.on_remove(peer)
+            peers = list(self.peers.values())
             self.peers.clear()
+
+        for peer in peers:
+            if self.on_remove:
+                self.on_remove(peer)
 
     def toggle(self):
         self.stop() if self._running else self.start()
