@@ -67,23 +67,18 @@ class ZeroconfDiscovery:
             self.on_add(name, self.peers[name])
 
     def _cleanup_loop(self):
-        while True:
-            with self._lock:
-                if not self.running:
-                    break
+        expired_peers = []
+        with self._lock:
+            now = time.time()
+            for name, peer in list(self.peers.items()):
+                if now - peer["last_seen"] > self.ttl:
+                    expired_peers.append((name, peer))
+                    del self.peers[name]
 
-                now = time.time()
-                expired = [
-                    name for name, peer in self.peers.items()
-                    if now - peer["last_seen"] > self.ttl
-                ]
-
-                for name in expired:
-                    peer = self.peers.pop(name)
-                    if self.on_remove:
-                        self.on_remove(name, peer)
-
-            time.sleep(self.cleanup_interval)
+        for name, peer in expired_peers:
+            if self.on_remove:
+                self.on_remove(name, peer)
+        time.sleep(self.cleanup_interval)
 
     def start(self):
         with self._lock:
