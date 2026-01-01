@@ -1,47 +1,43 @@
 import customtkinter
-from zeroconf import Zeroconf, ServiceInfo
-import socket, time
-
-
+from ZeroconfManager import ZeroconfBroadcaster, ZeroconfDiscovery
 customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
-app = customtkinter.CTk()
 
+app = customtkinter.CTk()
 app.geometry("600x480")
 
-def broadcast(name):
-    import psutil
+broadcaster = ZeroconfBroadcaster("MyService")
+services_box = customtkinter.CTkTextbox(app, width=500, height=200)
+services_box.pack(pady=20)
 
-    for iface, addrs in psutil.net_if_addrs().items():
-        for a in addrs:
-            if a.family == socket.AF_INET and a.address.startswith("192.168."):
-                ip = a.address
-    info = ServiceInfo(
-        "_http._tcp.local.",
-        f"{name}._http._tcp.local.",
-        addresses=[ip],
-        port=9999,
-        properties={"msg": "hello"},
+
+def update_service(name, info):
+    app.after(0, lambda: services_box.insert("end", f"{name}\n"))
+
+
+discovery = ZeroconfDiscovery(on_update=update_service)
+
+
+def toggle_broadcast():
+    broadcaster.toggle()
+    broadcast_btn.configure(
+        text="Stop Broadcast" if broadcaster.running else "Start Broadcast"
     )
 
-    z = Zeroconf()
-    z.register_service(info)
-    try:
-        print("Broadcasting service...")
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        z.unregister_service(info)
-        z.close()
+
+def toggle_discovery():
+    if discovery.browser:
+        discovery.stop()
+        discover_btn.configure(text="Start Discovery")
+    else:
+        discovery.start()
+        discover_btn.configure(text="Stop Discovery")
 
 
+broadcast_btn = customtkinter.CTkButton(app, text="Start Broadcast", command=toggle_broadcast)
+broadcast_btn.pack(pady=10)
 
-def button_function():
-    print("button pressed")
-
-
-button = customtkinter.CTkButton(master=app, text="CTkButton", command=button_function)
-button.place(relx=0.5, rely=0.5, anchor=customtkinter.CENTER)
-
+discover_btn = customtkinter.CTkButton(app, text="Start Discovery", command=toggle_discovery)
+discover_btn.pack(pady=10)
 
 app.mainloop()
