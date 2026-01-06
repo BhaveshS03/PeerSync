@@ -48,9 +48,9 @@ class ZeroconfBroadcaster:
         )
 
         self.zc.register_service(self.service_info)
-        print(f"📡 Broadcasting as {self.full_name}")
+        print(f"Broadcasting as {self.full_name}")
 
-        # 🔁 Keep thread alive while broadcasting
+        # Keep thread alive while broadcasting
         while True:
             with self._lock:
                 if not self.running:
@@ -66,7 +66,7 @@ class ZeroconfBroadcaster:
         self.zc = None
         self.service_info = None
 
-        print("🛑 Broadcasting stopped")
+        print("Broadcasting stopped")
 
     def start(self):
         with self._lock:

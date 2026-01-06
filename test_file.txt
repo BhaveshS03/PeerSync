@@ -1,0 +1,2 @@
+This is a test file for ZenSync file sharing functionality.
+It contains some sample text to verify that file transfer works correctly.

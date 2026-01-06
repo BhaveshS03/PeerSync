@@ -3,6 +3,7 @@ import queue
 import requests
 import uvicorn
 import customtkinter as ctk
+from tkinter import filedialog
 from fastapi import FastAPI
 
 from ZeroconfManager import (
@@ -34,6 +35,20 @@ class ZenSyncApp:
 
         self.peer_frame = ctk.CTkScrollableFrame(self.app, width=620, height=160)
         self.peer_frame.pack(pady=5)
+
+        # Add progress bar for file transfers
+        self.progress_frame = ctk.CTkFrame(self.app, width=620, height=50)
+        self.progress_frame.pack(pady=5, fill="x", padx=30)
+
+        self.progress_label = ctk.CTkLabel(self.progress_frame, text="File Transfer Progress:")
+        self.progress_label.pack(pady=(10, 0))
+
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=500)
+        self.progress_bar.pack(pady=5)
+        self.progress_bar.set(0)  # Set to 0 initially
+
+        self.progress_status = ctk.CTkLabel(self.progress_frame, text="")
+        self.progress_status.pack(pady=(0, 10))
 
         self.msg_entry = ctk.CTkEntry(
             self.app,
@@ -75,6 +90,8 @@ class ZenSyncApp:
             timeout=self.REQUEST_TIMEOUT,
             sender_id=self.broadcaster.instance_id,
             ui_log=self.ui_log,
+            ui_progress_bar=self.progress_bar,
+            ui_progress_status=self.progress_status,
         )
 
         self.connect_btn = ctk.CTkButton(
@@ -92,6 +109,14 @@ class ZenSyncApp:
             state="disabled",
         )
         self.send_btn.pack(pady=5)
+
+        self.file_btn = ctk.CTkButton(
+            self.app,
+            text="Send File",
+            command=self.send_file_selected,
+            state="disabled",
+        )
+        self.file_btn.pack(pady=5)
 
         self.toggle_btn = ctk.CTkButton(
             self.app,
@@ -190,10 +215,35 @@ class ZenSyncApp:
         self.msg_entry.delete(0, "end")
         self.dispatch(self.sender.send_message, peer, text)
 
+    def send_file_selected(self):
+        peer = self.get_selected_peer()
+        if not peer:
+            self.ui_log("⚠ No peer selected")
+            return
+
+        # Open file dialog to select a file
+        file_path = filedialog.askopenfilename(
+            title="Select a file to send",
+            filetypes=[
+                ("All files", "*.*"),
+                ("Text files", "*.txt"),
+                ("Image files", "*.png *.jpg *.jpeg *.gif *.bmp"),
+                ("PDF files", "*.pdf"),
+                ("Document files", "*.doc *.docx *.xls *.xlsx *.ppt *.pptx")
+            ]
+        )
+
+        if not file_path:
+            self.ui_log("⚠ No file selected")
+            return
+
+        self.dispatch(self.sender.send_file, peer, file_path)
+
     def on_peer_change(self, *_):
         state = "normal" if self.selected_peer_name.get() else "disabled"
         self.connect_btn.configure(state=state)
         self.send_btn.configure(state=state)
+        self.file_btn.configure(state=state)
 
     def toggle_manager(self):
         if self.manager._running:
