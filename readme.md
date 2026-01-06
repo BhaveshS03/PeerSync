@@ -1,4 +1,4 @@
-# PeerSync (WIP) 🚀
+# PeerSync 🚀
 
 **PeerSync** is a high-speed, local network peer-to-peer file sharing application. It combines a modern UI with a **FastAPI** backend to provide seamless transfers without the need for manual IP configuration.
 
@@ -24,6 +24,7 @@ Currently implementing:
 - [x] Transfer progress bar integration
 - [ ] Android Application
 - [ ] Multi-peer selection logic
+- [ ] Clipboard Sync
 
 
 ## ⚙️ Installation
