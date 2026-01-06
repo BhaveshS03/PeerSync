@@ -66,6 +66,7 @@ class ZenSyncApp:
         self.name_entry = ctk.CTkEntry(self.settings_frame, width=200)
         self.name_entry.insert(0, default_name)
         self.name_entry.grid(row=0, column=1, padx=10, pady=10)
+        custom_name = self.name_entry.get().strip()
 
         self.toggle_btn = ctk.CTkButton(
             self.settings_frame,
@@ -115,7 +116,7 @@ class ZenSyncApp:
         ).start()
 
         self.broadcaster = ZeroconfBroadcaster(
-            base_name=self.SERVICE_NAME,
+            base_name=custom_name,
             port=self.HTTP_PORT,
         )
 
@@ -233,9 +234,7 @@ class ZenSyncApp:
                 return
 
             self.ui_clear()
-            self.broadcaster.instance_id = custom_name
-            self.sender.sender_id = custom_name
-            self.discovery.own_id = custom_name
+            self.broadcaster.base_name = custom_name
             self.name_entry.configure(state="disabled")
 
             self.manager.start()
