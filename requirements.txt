@@ -1,0 +1,6 @@
+customtkinter
+fastapi
+uvicorn
+requests
+requests_toolbelt
+zeroconf
