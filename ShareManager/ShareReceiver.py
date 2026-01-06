@@ -1,61 +1,97 @@
 import os
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
 from datetime import datetime
 
-
-class Message(BaseModel):
-    sender: str
-    message: str
-
-
-class Chunk(BaseModel):
-    index: int
-    total: int
-    data: bytes
-
-
 class ShareReceiver:
-    def __init__(self, app: FastAPI):
+    def __init__(self, app: FastAPI, ui_progress_bar=None, ui_progress_status=None):
         self.app = app
         self.download_dir = "received_files"
+        self.ui_progress_bar = ui_progress_bar
+        self.ui_progress_status = ui_progress_status
         os.makedirs(self.download_dir, exist_ok=True)
         self._register_routes()
+
+    def _update_ui(self, received, total, filename):
+        """Update the receiver's UI elements"""
+        if total <= 0: return
+        
+        progress = received / total
+        if self.ui_progress_bar:
+            try: self.ui_progress_bar.set(progress)
+            except: pass
+            
+        if self.ui_progress_status:
+            try:
+                percent = progress * 100
+                status = f"Receiving {filename}: {percent:.1f}%"
+                self.ui_progress_status.configure(text=status)
+            except: pass
 
     def _register_routes(self):
         @self.app.get("/ping")
         async def ping():
             return {"status": "alive"}
 
-        @self.app.post("/message")
-        async def receive_message(msg: Message):
-            print(f"[{msg.sender}] {msg.message}")
-            return {"ok": True}
-
-        @self.app.post("/chunk")
-        async def receive_chunk(chunk: Chunk):
-            print(f"Chunk {chunk.index + 1}/{chunk.total}")
-            return {"ok": True}
-
         @self.app.post("/upload")
-        async def upload_file(file: UploadFile = File(...), sender: str = ""):
+        async def upload_file(request: Request):
+            # 1. Get total size from headers
             try:
-                # Create a unique filename to avoid conflicts
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"{timestamp}_{file.filename}"
-                file_path = os.path.join(self.download_dir, filename)
+                total_size = int(request.headers.get("Content-Length", 0))
+            except:
+                total_size = 0
 
-                # Save the uploaded file in chunks to handle large files
-                with open(file_path, "wb") as f:
-                    chunk_size = 8192  # 8KB chunks
+            # 2. Parse form headers manually
+            form = await request.form()
+            file_field = form["file"]
+            sender = form.get("sender", "Unknown")
+            filename = file_field.filename
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_name = f"{timestamp}_{filename}"
+            
+            # Define final path and temporary .part path
+            final_path = os.path.join(self.download_dir, unique_name)
+            part_path = final_path + ".part"
+
+            received_size = 0
+            chunk_size = 1024 * 1024  # 1MB
+            
+            try:
+                # Write to the .part file first
+                with open(part_path, "wb") as f:
                     while True:
-                        chunk = await file.read(chunk_size)
+                        chunk = await file_field.read(chunk_size)
                         if not chunk:
                             break
                         f.write(chunk)
+                        received_size += len(chunk)
+                        
+                        # Update progress bar
+                        self._update_ui(received_size, total_size, filename)
 
-                print(f"[{sender}] File received: {file.filename} -> {filename}")
-                return {"ok": True, "filename": filename}
+                # 3. Transfer complete: Rename .part to final filename
+                os.rename(part_path, final_path)
+                
+                print(f"✅ Received {filename} from {sender}")
+                self._reset_ui()
+                return {"ok": True, "size": received_size}
+
             except Exception as e:
-                print(f"Error receiving file: {str(e)}")
+                self._reset_ui()
+                # Cleanup: remove the partial file if it exists
+                if os.path.exists(part_path):
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                        
+                print(f"❌ Error receiving file: {e}")
                 return {"ok": False, "error": str(e)}
+
+    def _reset_ui(self):
+        if self.ui_progress_bar:
+            try: self.ui_progress_bar.set(0)
+            except: pass
+        if self.ui_progress_status:
+            try: self.ui_progress_status.configure(text="")
+            except: pass
