@@ -7,10 +7,11 @@ from zeroconf import Zeroconf, ServiceInfo
 
 
 class ZeroconfBroadcaster:
-    def __init__(self, base_name="ZenSync", service_type="_http._tcp.local.", port=9999):
+    def __init__(self, base_name="ZenSync", service_type="_peersync._tcp.local.", port=9999, signaling_port=0):
         self.base_name = base_name
         self.service_type = service_type
         self.port = port
+        self.signaling_port = signaling_port
 
         self.instance_id = uuid.uuid4().hex[:8]
         self.full_name = f"{self.base_name}-{self.instance_id}"
@@ -44,6 +45,7 @@ class ZeroconfBroadcaster:
             properties={
                 "id": self.instance_id,
                 "app": "zensync",
+                "sig_port": str(self.signaling_port),
             },
         )
 

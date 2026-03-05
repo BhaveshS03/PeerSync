@@ -1,28 +1,27 @@
 import threading
 import queue
-import requests
-import uvicorn
 import customtkinter as ctk
 import os
 from tkinter import filedialog, messagebox
-from fastapi import FastAPI
 
 from ZeroconfManager import (
     ZeroconfManager,
     ZeroconfBroadcaster,
     ZeroconfDiscovery,
 )
+from WebRTCManager import SignalingServer
 from ShareManager import ShareSender, ShareReceiver
+
 
 class ZenSyncApp:
     SERVICE_NAME = "MyService"
-    HTTP_PORT = 8000
-    REQUEST_TIMEOUT = 2
 
     def __init__(self):
-        self.api = FastAPI(title="ZenSyncServer")
-        self.receiver = ShareReceiver(self.api)
+        # ── Signaling server (WebRTC) ──────────────────────
+        self.signaling = SignalingServer()
+        self.signaling.start()
 
+        # ── GUI ────────────────────────────────────────────
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
 
@@ -107,6 +106,7 @@ class ZenSyncApp:
         self.peer_radios = {}
         self.selected_peer_name = ctk.StringVar(value="")
 
+        # ── Network worker thread ─────────────────────────
         self.net_queue = queue.Queue()
         self.net_running = True
 
@@ -115,9 +115,11 @@ class ZenSyncApp:
             daemon=True,
         ).start()
 
+        # ── Zeroconf ──────────────────────────────────────
         self.broadcaster = ZeroconfBroadcaster(
             base_name=custom_name,
-            port=self.HTTP_PORT,
+            port=self.signaling.port or 0,
+            signaling_port=self.signaling.port or 0,
         )
 
         self.discovery = ZeroconfDiscovery(
@@ -132,9 +134,17 @@ class ZenSyncApp:
             on_remove=self.on_remove,
         )
 
+        # ── ShareSender (WebRTC) ──────────────────────────
         self.sender = ShareSender(
-            timeout=self.REQUEST_TIMEOUT,
-            sender_id=self.broadcaster.instance_id,
+            signaling_server=self.signaling,
+            ui_log=self.ui_log,
+            ui_progress_bar=self.progress_bar,
+            ui_progress_status=self.progress_status,
+        )
+
+        # ── ShareReceiver (WebRTC) ────────────────────────
+        self.receiver = ShareReceiver(
+            signaling_server=self.signaling,
             ui_log=self.ui_log,
             ui_progress_bar=self.progress_bar,
             ui_progress_status=self.progress_status,
@@ -144,28 +154,32 @@ class ZenSyncApp:
         self.app.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def start(self):
-        threading.Thread(target=self._start_http_server, daemon=True).start()
         self.app.mainloop()
 
-    def _start_http_server(self):
-        uvicorn.run(self.api, host="0.0.0.0", port=self.HTTP_PORT, log_level="critical")
+    # ── Logging ───────────────────────────────────────────
 
     def ui_log(self, text):
         self.app.after(0, lambda: self.log_box.insert("end", text + "\n"))
 
     def ui_clear(self):
         self.app.after(0, lambda: self.log_box.delete("1.0", "end"))
-        
+
+    # ── Network worker ────────────────────────────────────
+
     def _network_worker(self):
         while self.net_running:
             try:
                 fn, args = self.net_queue.get(timeout=0.5)
                 fn(*args)
-            except queue.Empty: continue
-            except Exception as e: self.ui_log(f"⚠ Network error: {e}")
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self.ui_log(f"⚠ Network error: {e}")
 
     def dispatch(self, fn, *args):
         self.net_queue.put((fn, args))
+
+    # ── Peer management ───────────────────────────────────
 
     def get_selected_peer(self):
         return self.peers.get(self.selected_peer_name.get())
@@ -177,7 +191,7 @@ class ZenSyncApp:
         self.peers[peer.name] = peer
         radio = ctk.CTkRadioButton(
             self.peer_frame,
-            text=f"{peer.name} @ {peer.address}:{peer.port}",
+            text=f"{peer.name} @ {peer.address}:{peer.signaling_port}",
             variable=self.selected_peer_name,
             value=peer.name,
         )
@@ -194,14 +208,20 @@ class ZenSyncApp:
     def _on_remove_main(self, peer):
         self.peers.pop(peer.name, None)
         radio = self.peer_radios.pop(peer.name, None)
-        if radio: radio.destroy()
+        if radio:
+            radio.destroy()
         if self.selected_peer_name.get() == peer.name:
             self.selected_peer_name.set("")
         self.ui_log(f"➖ {peer.name} left")
+        # Clean up WebRTC connection
+        self.sender.disconnect_peer(peer.id)
+
+    # ── Actions ───────────────────────────────────────────
 
     def connect_selected(self):
         peer = self.get_selected_peer()
-        if peer: self.dispatch(self.sender.connect_peer, peer)
+        if peer:
+            self.dispatch(self.sender.connect_peer, peer)
 
     def send_selected(self):
         peer = self.get_selected_peer()
@@ -212,24 +232,27 @@ class ZenSyncApp:
 
     def send_file_selected(self):
         peer = self.get_selected_peer()
-        if not peer: return
+        if not peer:
+            return
         file_path = filedialog.askopenfilename()
         if file_path:
             self.dispatch(self.sender.send_file, peer, file_path)
-            
+
     def on_peer_change(self, *_):
         state = "normal" if self.selected_peer_name.get() else "disabled"
         self.connect_btn.configure(state=state)
         self.send_btn.configure(state=state)
         self.file_btn.configure(state=state)
 
+    # ── Zeroconf toggle ───────────────────────────────────
+
     def toggle_manager(self):
         if self.manager._running:
             self.manager.stop()
             self.ui_log("🛑 Zeroconf stopped")
             self.toggle_btn.configure(
-                text="Start Zeroconf", 
-                fg_color="green", 
+                text="Start Zeroconf",
+                fg_color="green",
                 hover_color="darkgreen"
             )
             self.name_entry.configure(state="normal")
@@ -246,15 +269,21 @@ class ZenSyncApp:
             self.manager.start()
             self.ui_log(f"▶ Zeroconf started as '{custom_name}'")
             self.toggle_btn.configure(
-                text="Stop Zeroconf", 
-                fg_color="red", 
+                text="Stop Zeroconf",
+                fg_color="red",
                 hover_color="darkred"
             )
 
+    # ── Shutdown ──────────────────────────────────────────
+
     def on_close(self):
         self.net_running = False
+        self.sender.close_all()
+        self.receiver.close_all()
         self.manager.stop()
+        self.signaling.stop()
         self.app.destroy()
+
 
 if __name__ == "__main__":
     ZenSyncApp().start()

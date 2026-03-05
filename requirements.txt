@@ -1,7 +1,4 @@
 customtkinter
-fastapi
-uvicorn
-requests
-requests_toolbelt
+aiortc
 zeroconf
 psutil

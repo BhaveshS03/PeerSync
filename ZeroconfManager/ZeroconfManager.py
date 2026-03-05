@@ -10,6 +10,7 @@ class Peer:
     name: str
     address: str
     port: int
+    signaling_port: int
     last_seen: float
 
 
@@ -49,6 +50,7 @@ class ZeroconfManager:
                 peer = self.peers[peer_id]
                 peer.address = info["address"]
                 peer.port = info["port"]
+                peer.signaling_port = info.get("signaling_port", 0)
                 peer.last_seen = now
 
                 if self.on_update:
@@ -60,6 +62,7 @@ class ZeroconfManager:
                 name=name,
                 address=info["address"],
                 port=info["port"],
+                signaling_port=info.get("signaling_port", 0),
                 last_seen=now,
             )
 

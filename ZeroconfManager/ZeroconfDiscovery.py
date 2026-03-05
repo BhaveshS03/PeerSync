@@ -7,7 +7,7 @@ from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
 class ZeroconfDiscovery:
     def __init__(
         self,
-        service_type="_http._tcp.local.",
+        service_type="_peersync._tcp.local.",
         own_id=None,
         on_add=None,
         on_remove=None,
@@ -53,6 +53,7 @@ class ZeroconfDiscovery:
             return
 
         addr = socket.inet_ntoa(info.addresses[0]) if info.addresses else None
+        sig_port = int(props.get("sig_port", 0))
 
         with self._lock:
             first_seen = name not in self.peers
@@ -60,6 +61,7 @@ class ZeroconfDiscovery:
                 "id": peer_id,
                 "address": addr,
                 "port": info.port,
+                "signaling_port": sig_port,
                 "last_seen": time.time(),
             }
 
