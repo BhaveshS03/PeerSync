@@ -171,6 +171,9 @@ class ZenSyncApp:
         return self.peers.get(self.selected_peer_name.get())
 
     def on_add(self, peer):
+        self.app.after(0, self._on_add_main, peer)
+
+    def _on_add_main(self, peer):
         self.peers[peer.name] = peer
         radio = ctk.CTkRadioButton(
             self.peer_frame,
@@ -183,9 +186,12 @@ class ZenSyncApp:
         self.ui_log(f"➕ {peer.name} joined")
 
     def on_update(self, peer):
-        self.ui_log(f"🔄 {peer.name} updated")
+        self.app.after(0, lambda: self.ui_log(f"🔄 {peer.name} updated"))
 
     def on_remove(self, peer):
+        self.app.after(0, self._on_remove_main, peer)
+
+    def _on_remove_main(self, peer):
         self.peers.pop(peer.name, None)
         radio = self.peer_radios.pop(peer.name, None)
         if radio: radio.destroy()

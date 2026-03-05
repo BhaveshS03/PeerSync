@@ -4,3 +4,4 @@ uvicorn
 requests
 requests_toolbelt
 zeroconf
+psutil
