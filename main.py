@@ -2,9 +2,13 @@ import threading
 import queue
 import requests
 import uvicorn
-import customtkinter as ctk
 import os
-from tkinter import filedialog, messagebox
+import sys
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, GLib, Gio
+
 from fastapi import FastAPI
 
 from ZeroconfManager import (
@@ -14,98 +18,31 @@ from ZeroconfManager import (
 )
 from ShareManager import ShareSender, ShareReceiver
 
-class ZenSyncApp:
+class ProgressBarWrapper:
+    def __init__(self, gtk_progress_bar):
+        self.bar = gtk_progress_bar
+    def set(self, val):
+        GLib.idle_add(self.bar.set_fraction, val)
+
+class LabelWrapper:
+    def __init__(self, gtk_label):
+        self.label = gtk_label
+    def configure(self, text=""):
+        GLib.idle_add(self.label.set_label, text)
+
+class ZenSyncApp(Gtk.Application):
     SERVICE_NAME = "MyService"
     HTTP_PORT = 8000
     REQUEST_TIMEOUT = 2
 
     def __init__(self):
+        super().__init__(application_id='com.zensync.manager',
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.api = FastAPI(title="ZenSyncServer")
         self.receiver = ShareReceiver(self.api)
 
-        ctk.set_appearance_mode("System")
-        ctk.set_default_color_theme("blue")
-
-        self.app = ctk.CTk()
-        self.app.geometry("680x650")
-        self.app.title("ZenSync Manager")
-
-        self.log_box = ctk.CTkTextbox(self.app, width=620, height=150)
-        self.log_box.pack(pady=10)
-
-        self.peer_frame = ctk.CTkScrollableFrame(self.app, width=620, height=140)
-        self.peer_frame.pack(pady=5)
-
-        self.progress_frame = ctk.CTkFrame(self.app, width=620, height=50)
-        self.progress_frame.pack(pady=5, fill="x", padx=30)
-
-        self.progress_label = ctk.CTkLabel(self.progress_frame, text="File Transfer Progress:")
-        self.progress_label.pack(pady=(5, 0))
-
-        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=500)
-        self.progress_bar.pack(pady=5)
-        self.progress_bar.set(0)
-
-        self.progress_status = ctk.CTkLabel(self.progress_frame, text="")
-        self.progress_status.pack(pady=(0, 5))
-
-        self.msg_entry = ctk.CTkEntry(
-            self.app,
-            width=620,
-            placeholder_text="Type message to send...",
-        )
-        self.msg_entry.pack(pady=5)
-
-        self.settings_frame = ctk.CTkFrame(self.app, width=620)
-        self.settings_frame.pack(pady=10, padx=30, fill="x")
-
-        self.name_label = ctk.CTkLabel(self.settings_frame, text="Your Name:")
-        self.name_label.grid(row=0, column=0, padx=10, pady=10)
-
-        default_name = os.getlogin() if hasattr(os, "getlogin") else "User"
-        self.name_entry = ctk.CTkEntry(self.settings_frame, width=200)
-        self.name_entry.insert(0, default_name)
-        self.name_entry.grid(row=0, column=1, padx=10, pady=10)
-        custom_name = self.name_entry.get().strip()
-
-        self.toggle_btn = ctk.CTkButton(
-            self.settings_frame,
-            text="Start Server",
-            command=self.toggle_manager,
-            fg_color="green", hover_color="darkgreen"
-        )
-        self.toggle_btn.grid(row=0, column=2, padx=10, pady=10)
-
-        self.btn_frame = ctk.CTkFrame(self.app, fg_color="transparent")
-        self.btn_frame.pack(pady=5)
-
-        self.connect_btn = ctk.CTkButton(
-            self.btn_frame,
-            text="Connect to Peer",
-            command=self.connect_selected,
-            state="disabled",
-        )
-        self.connect_btn.pack(side="left", padx=5)
-
-        self.send_btn = ctk.CTkButton(
-            self.btn_frame,
-            text="Send Message",
-            command=self.send_selected,
-            state="disabled",
-        )
-        self.send_btn.pack(side="left", padx=5)
-
-        self.file_btn = ctk.CTkButton(
-            self.btn_frame,
-            text="Send File",
-            command=self.send_file_selected,
-            state="disabled",
-        )
-        self.file_btn.pack(side="left", padx=5)
-
         self.peers = {}
-        self.peer_radios = {}
-        self.selected_peer_name = ctk.StringVar(value="")
+        self.selected_peer_name = ""
 
         self.net_queue = queue.Queue()
         self.net_running = True
@@ -115,46 +52,155 @@ class ZenSyncApp:
             daemon=True,
         ).start()
 
-        self.broadcaster = ZeroconfBroadcaster(
-            base_name=custom_name,
-            port=self.HTTP_PORT,
-        )
+    def do_activate(self):
+        window = getattr(self.props, 'active_window', None)
+        if not window:
+            window = Gtk.ApplicationWindow(application=self)
+            window.set_title("ZenSync Manager")
+            window.set_default_size(680, 650)
+            
+            # Setup close handler
+            window.connect("close-request", self.on_close)
 
-        self.discovery = ZeroconfDiscovery(
-            own_id=self.broadcaster.instance_id,
-        )
+            # Main container (VBox)
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            vbox.set_margin_start(10)
+            vbox.set_margin_end(10)
+            vbox.set_margin_top(10)
+            vbox.set_margin_bottom(10)
+            window.set_child(vbox)
 
-        self.manager = ZeroconfManager(
-            broadcaster=self.broadcaster,
-            discovery=self.discovery,
-            on_add=self.on_add,
-            on_update=self.on_update,
-            on_remove=self.on_remove,
-        )
+            # Log box
+            scrolled_log = Gtk.ScrolledWindow()
+            scrolled_log.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scrolled_log.set_size_request(620, 150)
+            
+            self.log_buffer = Gtk.TextBuffer()
+            log_view = Gtk.TextView(buffer=self.log_buffer)
+            log_view.set_editable(False)
+            log_view.set_cursor_visible(False)
+            scrolled_log.set_child(log_view)
+            vbox.append(scrolled_log)
 
-        self.sender = ShareSender(
-            timeout=self.REQUEST_TIMEOUT,
-            sender_id=self.broadcaster.instance_id,
-            ui_log=self.ui_log,
-            ui_progress_bar=self.progress_bar,
-            ui_progress_status=self.progress_status,
-        )
+            # Peer frame (ListBox)
+            scrolled_peers = Gtk.ScrolledWindow()
+            scrolled_peers.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scrolled_peers.set_size_request(620, 140)
+            self.peer_list = Gtk.ListBox()
+            self.peer_list.connect("row-selected", self.on_peer_change)
+            scrolled_peers.set_child(self.peer_list)
+            vbox.append(scrolled_peers)
 
-        self.selected_peer_name.trace_add("write", self.on_peer_change)
-        self.app.protocol("WM_DELETE_WINDOW", self.on_close)
+            # Progress frame
+            progress_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            progress_frame.set_margin_start(30)
+            progress_frame.set_margin_end(30)
+            
+            self.progress_label = Gtk.Label(label="File Transfer Progress:")
+            progress_frame.append(self.progress_label)
+            
+            self.progress_bar = Gtk.ProgressBar()
+            self.progress_bar.set_size_request(500, -1)
+            progress_frame.append(self.progress_bar)
+            
+            self.progress_status = Gtk.Label(label="")
+            progress_frame.append(self.progress_status)
+            vbox.append(progress_frame)
 
-    def start(self):
-        threading.Thread(target=self._start_http_server, daemon=True).start()
-        self.app.mainloop()
+            # Message entry
+            self.msg_entry = Gtk.Entry()
+            self.msg_entry.set_placeholder_text("Type message to send...")
+            vbox.append(self.msg_entry)
+
+            # Settings frame
+            settings_grid = Gtk.Grid()
+            settings_grid.set_column_spacing(10)
+            settings_grid.set_row_spacing(10)
+            settings_grid.set_margin_start(30)
+            settings_grid.set_margin_end(30)
+            settings_grid.set_margin_top(10)
+            settings_grid.set_margin_bottom(10)
+            vbox.append(settings_grid)
+
+            self.name_label = Gtk.Label(label="Your Name:")
+            settings_grid.attach(self.name_label, 0, 0, 1, 1)
+
+            default_name = os.getlogin() if hasattr(os, "getlogin") else "User"
+            self.name_entry = Gtk.Entry()
+            self.name_entry.set_text(default_name)
+            self.name_entry.set_width_chars(20)
+            settings_grid.attach(self.name_entry, 1, 0, 1, 1)
+            custom_name = self.name_entry.get_text().strip()
+
+            self.toggle_btn = Gtk.Button(label="Start Server")
+            self.toggle_btn.connect("clicked", self.toggle_manager)
+            self.toggle_btn.add_css_class("suggested-action")
+            settings_grid.attach(self.toggle_btn, 2, 0, 1, 1)
+
+            # Button frame
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            btn_box.set_halign(Gtk.Align.CENTER)
+            vbox.append(btn_box)
+
+            self.connect_btn = Gtk.Button(label="Connect to Peer")
+            self.connect_btn.connect("clicked", self.connect_selected)
+            self.connect_btn.set_sensitive(False)
+            btn_box.append(self.connect_btn)
+
+            self.send_btn = Gtk.Button(label="Send Message")
+            self.send_btn.connect("clicked", self.send_selected)
+            self.send_btn.set_sensitive(False)
+            btn_box.append(self.send_btn)
+
+            self.file_btn = Gtk.Button(label="Send File")
+            self.file_btn.connect("clicked", self.send_file_selected)
+            self.file_btn.set_sensitive(False)
+            btn_box.append(self.file_btn)
+
+            self.broadcaster = ZeroconfBroadcaster(
+                base_name=custom_name,
+                port=self.HTTP_PORT,
+            )
+
+            self.discovery = ZeroconfDiscovery(
+                own_id=self.broadcaster.instance_id,
+            )
+
+            self.manager = ZeroconfManager(
+                broadcaster=self.broadcaster,
+                discovery=self.discovery,
+                on_add=self.on_add,
+                on_update=self.on_update,
+                on_remove=self.on_remove,
+            )
+
+            self.sender = ShareSender(
+                timeout=self.REQUEST_TIMEOUT,
+                sender_id=self.broadcaster.instance_id,
+                ui_log=self.ui_log,
+                ui_progress_bar=ProgressBarWrapper(self.progress_bar),
+                ui_progress_status=LabelWrapper(self.progress_status),
+            )
+
+            threading.Thread(target=self._start_http_server, daemon=True).start()
+            
+        window.present()
 
     def _start_http_server(self):
         uvicorn.run(self.api, host="0.0.0.0", port=self.HTTP_PORT, log_level="critical")
 
     def ui_log(self, text):
-        self.app.after(0, lambda: self.log_box.insert("end", text + "\n"))
+        GLib.idle_add(self._ui_log_idle, text)
+
+    def _ui_log_idle(self, text):
+        end_iter = self.log_buffer.get_end_iter()
+        self.log_buffer.insert(end_iter, text + "\n")
 
     def ui_clear(self):
-        self.app.after(0, lambda: self.log_box.delete("1.0", "end"))
+        GLib.idle_add(self._ui_clear_idle)
+
+    def _ui_clear_idle(self):
+        self.log_buffer.set_text("")
         
     def _network_worker(self):
         while self.net_running:
@@ -168,93 +214,134 @@ class ZenSyncApp:
         self.net_queue.put((fn, args))
 
     def get_selected_peer(self):
-        return self.peers.get(self.selected_peer_name.get())
+        if not self.selected_peer_name:
+            return None
+        return self.peers.get(self.selected_peer_name)
 
     def on_add(self, peer):
-        self.app.after(0, self._on_add_main, peer)
+        GLib.idle_add(self._on_add_main, peer)
 
     def _on_add_main(self, peer):
         self.peers[peer.name] = peer
-        radio = ctk.CTkRadioButton(
-            self.peer_frame,
-            text=f"{peer.name} @ {peer.address}:{peer.port}",
-            variable=self.selected_peer_name,
-            value=peer.name,
-        )
-        radio.pack(anchor="w", padx=10, pady=2)
-        self.peer_radios[peer.name] = radio
+        row = Gtk.ListBoxRow()
+        label = Gtk.Label(label=f"{peer.name} @ {peer.address}:{peer.port}", xalign=0)
+        label.set_margin_start(10)
+        label.set_margin_end(10)
+        label.set_margin_top(5)
+        label.set_margin_bottom(5)
+        row.set_child(label)
+        row.peer_name = peer.name
+        self.peer_list.append(row)
         self.ui_log(f"➕ {peer.name} joined")
 
     def on_update(self, peer):
-        self.app.after(0, lambda: self.ui_log(f"🔄 {peer.name} updated"))
+        GLib.idle_add(self.ui_log, f"🔄 {peer.name} updated")
 
     def on_remove(self, peer):
-        self.app.after(0, self._on_remove_main, peer)
+        GLib.idle_add(self._on_remove_main, peer)
 
     def _on_remove_main(self, peer):
         self.peers.pop(peer.name, None)
-        radio = self.peer_radios.pop(peer.name, None)
-        if radio: radio.destroy()
-        if self.selected_peer_name.get() == peer.name:
-            self.selected_peer_name.set("")
+        
+        # Determine if we need to clear selection
+        if self.selected_peer_name == peer.name:
+            self.selected_peer_name = ""
+            self.on_peer_change(self.peer_list, None)
+            
+        # Find the row to remove
+        row_to_remove = None
+        for i in range(1000): # max search safeguard
+            row = self.peer_list.get_row_at_index(i)
+            if not row: break
+            if getattr(row, 'peer_name', None) == peer.name:
+                row_to_remove = row
+                break
+                
+        if row_to_remove:
+            self.peer_list.remove(row_to_remove)
+            
         self.ui_log(f"➖ {peer.name} left")
 
-    def connect_selected(self):
+    def connect_selected(self, btn):
         peer = self.get_selected_peer()
-        if peer: self.dispatch(self.sender.connect_peer, peer)
+        if peer: self.dispatch(getattr(self.sender, "connect_peer", lambda x: print('connect_peer not implemented in ShareSender')), peer)
 
-    def send_selected(self):
+    def send_selected(self, btn):
         peer = self.get_selected_peer()
-        text = self.msg_entry.get().strip()
+        text = self.msg_entry.get_text().strip()
         if peer and text:
-            self.msg_entry.delete(0, "end")
-            self.dispatch(self.sender.send_message, peer, text)
+            self.msg_entry.set_text("")
+            self.dispatch(getattr(self.sender, "send_message", lambda x, y: print('send_message not implemented in ShareSender')), peer, text)
 
-    def send_file_selected(self):
+    def send_file_selected(self, btn):
         peer = self.get_selected_peer()
         if not peer: return
-        file_path = filedialog.askopenfilename()
-        if file_path:
-            self.dispatch(self.sender.send_file, peer, file_path)
-            
-    def on_peer_change(self, *_):
-        state = "normal" if self.selected_peer_name.get() else "disabled"
-        self.connect_btn.configure(state=state)
-        self.send_btn.configure(state=state)
-        self.file_btn.configure(state=state)
+        
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Select a file to send")
+        
+        window = getattr(self.props, 'active_window', None)
+        if not window: return
+        
+        dialog.open(window, None, self._on_file_selected_cb, peer)
 
-    def toggle_manager(self):
+    def _on_file_selected_cb(self, dialog, result, peer):
+        try:
+            file = dialog.open_finish(result)
+            if file:
+                file_path = file.get_path()
+                self.dispatch(self.sender.send_file, peer, file_path)
+        except GLib.Error:
+            pass # user cancelled
+
+    def on_peer_change(self, listbox, row):
+        if row:
+            self.selected_peer_name = getattr(row, 'peer_name', "")
+        else:
+            self.selected_peer_name = ""
+            
+        can_interact = bool(self.selected_peer_name)
+        self.connect_btn.set_sensitive(can_interact)
+        self.send_btn.set_sensitive(can_interact)
+        self.file_btn.set_sensitive(can_interact)
+
+    def toggle_manager(self, btn):
         if self.manager._running:
             self.manager.stop()
             self.ui_log("🛑 Zeroconf stopped")
-            self.toggle_btn.configure(
-                text="Start Zeroconf", 
-                fg_color="green", 
-                hover_color="darkgreen"
-            )
-            self.name_entry.configure(state="normal")
+            self.toggle_btn.set_label("Start Server")
+            self.toggle_btn.remove_css_class("destructive-action")
+            self.toggle_btn.add_css_class("suggested-action")
+            self.name_entry.set_sensitive(True)
         else:
-            custom_name = self.name_entry.get().strip()
+            custom_name = self.name_entry.get_text().strip()
             if not custom_name:
-                messagebox.showerror("Error", "Please enter a valid name before starting.")
+                self._show_error("Please enter a valid name before starting.")
                 return
 
             self.ui_clear()
             self.broadcaster.base_name = custom_name
-            self.name_entry.configure(state="disabled")
+            self.name_entry.set_sensitive(False)
 
             self.manager.start()
             self.ui_log(f"▶ Zeroconf started as '{custom_name}'")
-            self.toggle_btn.configure(
-                text="Stop Zeroconf", 
-                fg_color="red", 
-                hover_color="darkred"
-            )
+            self.toggle_btn.set_label("Stop Server")
+            self.toggle_btn.remove_css_class("suggested-action")
+            self.toggle_btn.add_css_class("destructive-action")
 
-    def on_close(self):
+    def _show_error(self, message):
+        window = getattr(self.props, 'active_window', None)
+        dialog = Gtk.AlertDialog(message=message)
+        dialog.show(window)
+
+    def on_close(self, window):
         self.net_running = False
-        self.manager.stop()
-        self.app.destroy()
+        if hasattr(self, 'manager'):
+            self.manager.stop()
+        return False # propagate
 
 if __name__ == "__main__":
-    ZenSyncApp().start()
+    app = ZenSyncApp()
+    exit_status = app.run(sys.argv)
+    sys.exit(exit_status)
+
